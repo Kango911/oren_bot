@@ -14,7 +14,7 @@ logging.basicConfig(
 
 
 def main():
-    # Инициализация базы данных и заполнение мероприятий
+    # Инициализация базы данных и заполнение мероприятий (только если их нет)
     db = Database()
     db.populate_events(EVENTS_DATA)
 

@@ -3,8 +3,9 @@ from telegram.ext import CallbackContext, ConversationHandler
 from config import States
 from database import Database
 from keyboards import main_menu_keyboard, dates_keyboard, events_keyboard, confirmation_keyboard, \
-    unregister_events_keyboard
+    unregister_events_keyboard, admin_menu_keyboard
 import re
+from admin_config import ADMIN_IDS
 
 db = Database()
 
@@ -107,7 +108,7 @@ async def button_click(update: Update, context: CallbackContext) -> None:
     # Проверяем, зарегистрирован ли волонтер
     volunteer = db.get_volunteer_by_telegram_id(user_id)
 
-    if not volunteer and data not in ['cancel', 'help']:
+    if not volunteer and data not in ['cancel', 'help', 'admin']:
         await query.edit_message_text(
             "❌ Вы не зарегистрированы как волонтер.\n"
             "Пожалуйста, завершите регистрацию, введя команду /start"
@@ -149,13 +150,17 @@ async def button_click(update: Update, context: CallbackContext) -> None:
         current_count = db.get_registrations_count(event_id)
         available_slots = event['max_volunteers'] - current_count
 
+        # Проверяем очередь
+        waiting_count = len(db.get_waiting_list_for_event(event_id))
+
         await query.edit_message_text(
             f"📋 Информация о мероприятии:\n\n"
             f"📅 Дата: {event['date']}\n"
             f"🕒 Время: {event['start_time']} - {event['end_time']}\n"
             f"🎬 Название: {event['title']}\n"
             f"🔞 Возрастное ограничение: {event['age_limit']}\n"
-            f"👥 Свободных мест: {available_slots}/{event['max_volunteers']}\n\n"
+            f"👥 Свободных мест: {available_slots}/{event['max_volunteers']}\n"
+            f"📋 Людей в очереди: {waiting_count}\n\n"
             f"Подтвердите запись на это мероприятие:",
             reply_markup=confirmation_keyboard()
         )
@@ -174,8 +179,20 @@ async def button_click(update: Update, context: CallbackContext) -> None:
         success, message = db.register_volunteer_for_event(volunteer['id'], event_id)
         await query.edit_message_text(message)
 
-        if success:
-            # Отправляем подтверждение в личные сообщения
+        if "очередь" in message.lower() or "позиция" in message.lower():
+            # Если добавлен в очередь, отправляем дополнительную информацию
+            event = db.get_event_by_id(event_id)
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"📋 Вы добавлены в очередь на мероприятие!\n\n"
+                     f"📅 Дата: {event['date']}\n"
+                     f"🕒 Время: {event['start_time']} - {event['end_time']}\n"
+                     f"🎬 Название: {event['title']}\n\n"
+                     f"{message}\n\n"
+                     f"Мы уведомим вас, если место освободится!"
+            )
+        elif success:
+            # Успешная запись
             event = db.get_event_by_id(event_id)
             await context.bot.send_message(
                 chat_id=user_id,
@@ -190,10 +207,21 @@ async def button_click(update: Update, context: CallbackContext) -> None:
         volunteer = db.get_volunteer_by_telegram_id(user_id)
         if volunteer:
             registrations = db.get_volunteer_registrations(volunteer['id'])
-            if registrations:
+            waiting_list = db.get_volunteer_waiting_list(volunteer['id'])
+
+            if registrations or waiting_list:
                 events_text = "📋 Ваши записи на мероприятия:\n\n"
-                for i, reg in enumerate(registrations, 1):
-                    events_text += f"{i}. 📅 {reg['date']} {reg['start_time']}\n   🎬 {reg['title']}\n\n"
+
+                if registrations:
+                    events_text += "✅ Подтвержденные записи:\n"
+                    for i, reg in enumerate(registrations, 1):
+                        events_text += f"{i}. 📅 {reg['date']} {reg['start_time']}\n   🎬 {reg['title']}\n\n"
+
+                if waiting_list:
+                    events_text += "⏳ В очереди:\n"
+                    for i, wait in enumerate(waiting_list, len(registrations) + 1):
+                        events_text += f"{i}. 📅 {wait['date']} {wait['start_time']}\n   🎬 {wait['title']}\n   📊 Позиция в очереди: {wait['position']}\n\n"
+
                 await query.edit_message_text(events_text)
             else:
                 await query.edit_message_text("📭 У вас пока нет записей на мероприятия.")
@@ -202,7 +230,9 @@ async def button_click(update: Update, context: CallbackContext) -> None:
         volunteer = db.get_volunteer_by_telegram_id(user_id)
         if volunteer:
             registrations = db.get_volunteer_registrations(volunteer['id'])
-            if registrations:
+            waiting_list = db.get_volunteer_waiting_list(volunteer['id'])
+
+            if registrations or waiting_list:
                 await query.edit_message_text(
                     "Выберите мероприятие, от которого хотите отписаться:",
                     reply_markup=unregister_events_keyboard(volunteer['id'])
@@ -215,17 +245,121 @@ async def button_click(update: Update, context: CallbackContext) -> None:
         volunteer = db.get_volunteer_by_telegram_id(user_id)
 
         if volunteer:
-            success, message = db.unregister_volunteer_from_event(volunteer['id'], event_id)
+            success, message, next_volunteer = db.unregister_volunteer_from_event(volunteer['id'], event_id)
             await query.edit_message_text(message)
 
-            if success:
+            if success and next_volunteer:
                 event = db.get_event_by_id(event_id)
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"❌ Вы отписаны от мероприятия:\n\n"
-                         f"📅 {event['date']} {event['start_time']}\n"
-                         f"🎬 {event['title']}"
-                )
+                # Уведомляем следующего волонтера в очереди, если есть
+                try:
+                    await context.bot.send_message(
+                        chat_id=next_volunteer['telegram_id'],
+                        text=f"🎉 Отличные новости! Место освободилось!\n\n"
+                             f"Вы были автоматически записаны на мероприятие:\n"
+                             f"📅 Дата: {event['date']}\n"
+                             f"🕒 Время: {event['start_time']} - {event['end_time']}\n"
+                             f"🎬 Название: {event['title']}\n\n"
+                             f"Не забудьте подойти за 15 минут до начала!"
+                    )
+                except Exception as e:
+                    print(f"Error notifying next volunteer: {e}")
+
+
+    elif data == 'admin':
+
+        if user_id in ADMIN_IDS:
+
+            await query.edit_message_text(
+
+                "👑 Админ-панель\n\nВыберите действие:",
+
+                reply_markup=admin_menu_keyboard()
+
+            )
+
+        else:
+
+            await query.edit_message_text("❌ У вас нет прав доступа к этой функции.")
+
+    elif data == 'admin_queues':
+
+        if user_id in ADMIN_IDS:
+
+            waiting_lists = db.get_admin_waiting_lists()
+
+            if waiting_lists:
+
+                admin_text = "📋 Очереди на мероприятия:\n\n"
+
+                for item in waiting_lists:
+                    admin_text += f"🎬 {item['title']}\n"
+
+                    admin_text += f"📅 {item['date']} {item['start_time']}\n"
+
+                    admin_text += f"👥 В очереди: {item['queue_count']} чел.\n"
+
+                    admin_text += f"👤 Волонтеры в очереди:\n{item['volunteers_info']}\n"
+
+                    admin_text += "\n" + "=" * 50 + "\n\n"
+
+                if len(admin_text) > 4000:
+
+                    parts = [admin_text[i:i + 4000] for i in range(0, len(admin_text), 4000)]
+
+                    for part in parts:
+                        await query.message.reply_text(part)
+
+                    await query.edit_message_text("✅ Информация об очередях отправлена.")
+
+                else:
+
+                    await query.edit_message_text(admin_text)
+
+            else:
+
+                await query.edit_message_text("📭 На данный момент очередей нет.")
+
+        else:
+
+            await query.edit_message_text("❌ У вас нет прав доступа к этой функции.")
+
+
+    elif data == 'admin_stats':
+
+        if user_id in ADMIN_IDS:
+
+            # Добавьте здесь логику для статистики
+
+            events = db.get_all_events()
+
+            total_volunteers = 0
+
+            total_waiting = 0
+
+            for event in events:
+                registrations_count = db.get_registrations_count(event['id'])
+
+                waiting_count = len(db.get_waiting_list_for_event(event['id']))
+
+                total_volunteers += registrations_count
+
+                total_waiting += waiting_count
+
+            stats_text = (
+
+                f"📊 Статистика мероприятий:\n\n"
+
+                f"📅 Всего мероприятий: {len(events)}\n"
+
+                f"👥 Всего записано волонтеров: {total_volunteers}\n"
+
+                f"⏳ Всего в очередях: {total_waiting}\n"
+
+                f"📈 Заполняемость: {round((total_volunteers / (len(events) * 6)) * 100, 1)}%"
+
+            )
+
+            await query.edit_message_text(stats_text, reply_markup=admin_menu_keyboard())
 
     elif data == 'help':
         await query.edit_message_text(
@@ -235,7 +369,8 @@ async def button_click(update: Update, context: CallbackContext) -> None:
             "После регистрации вы сможете:\n"
             "• 📝 Записываться на мероприятия\n"
             "• 📋 Просматривать свои записи\n"
-            "• ❌ Отписываться от мероприятий"
+            "• ❌ Отписываться от мероприятий\n\n"
+            "📊 Если мероприятие заполнено, вы будете добавлены в очередь!"
         )
 
     elif data in ['back_to_main', 'cancel']:
@@ -266,5 +401,6 @@ async def help_command(update: Update, context: CallbackContext) -> None:
         "После регистрации вы сможете:\n"
         "• 📝 Записываться на мероприятия\n"
         "• 📋 Просматривать свои записи\n"
-        "• ❌ Отписываться от мероприятий"
+        "• ❌ Отписываться от мероприятий\n\n"
+        "📊 Если мероприятие заполнено, вы будете добавлены в очередь!"
     )
