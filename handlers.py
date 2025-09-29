@@ -240,29 +240,107 @@ async def button_click(update: Update, context: CallbackContext) -> None:
             else:
                 await query.edit_message_text("📭 У вас нет активных записей на мероприятия.")
 
+
     elif data.startswith('unreg_'):
-        event_id = int(data.split('_')[1])
+
         volunteer = db.get_volunteer_by_telegram_id(user_id)
 
         if volunteer:
-            success, message, next_volunteer = db.unregister_volunteer_from_event(volunteer['id'], event_id)
-            await query.edit_message_text(message)
 
-            if success and next_volunteer:
-                event = db.get_event_by_id(event_id)
-                # Уведомляем следующего волонтера в очереди, если есть
-                try:
-                    await context.bot.send_message(
-                        chat_id=next_volunteer['telegram_id'],
-                        text=f"🎉 Отличные новости! Место освободилось!\n\n"
-                             f"Вы были автоматически записаны на мероприятие:\n"
-                             f"📅 Дата: {event['date']}\n"
-                             f"🕒 Время: {event['start_time']} - {event['end_time']}\n"
-                             f"🎬 Название: {event['title']}\n\n"
-                             f"Не забудьте подойти за 15 минут до начала!"
-                    )
-                except Exception as e:
-                    print(f"Error notifying next volunteer: {e}")
+            parts = data.split('_')
+
+            if len(parts) >= 3:
+
+                unreg_type = parts[1]  # 'event' или 'wait'
+
+                record_id = int(parts[2])
+
+                if unreg_type == 'event':
+
+                    # Отписка от основного мероприятия
+
+                    event = db.get_event_by_id(record_id)
+
+                    if event:
+
+                        success, message, next_volunteer = db.unregister_volunteer_from_event(volunteer['id'],
+                                                                                              record_id)
+
+                        await query.edit_message_text(message)
+
+                        if success and next_volunteer:
+
+                            # Уведомляем следующего волонтера в очереди
+
+                            try:
+
+                                await context.bot.send_message(
+
+                                    chat_id=next_volunteer['telegram_id'],
+
+                                    text=f"🎉 Отличные новости! Место освободилось!\n\n"
+
+                                         f"Вы были автоматически записаны на мероприятие:\n"
+
+                                         f"📅 Дата: {event['date']}\n"
+
+                                         f"🕒 Время: {event['start_time']} - {event['end_time']}\n"
+
+                                         f"🎬 Название: {event['title']}\n\n"
+
+                                         f"Не забудьте подойти за 15 минут до начала!"
+
+                                )
+
+                            except Exception as e:
+
+                                print(f"Error notifying next volunteer: {e}")
+
+                    else:
+
+                        await query.edit_message_text("❌ Мероприятие не найдено.")
+
+
+                elif unreg_type == 'wait':
+
+                    # Удаление из очереди ожидания
+
+                    # Находим запись в waiting_list по ID
+
+                    waiting_list = db.get_volunteer_waiting_list(volunteer['id'])
+
+                    target_wait = None
+
+                    for wait in waiting_list:
+
+                        if wait['id'] == record_id:
+                            target_wait = wait
+
+                            break
+
+                    if target_wait:
+
+                        success = db.remove_from_waiting_list(volunteer['id'], target_wait['id'])
+
+                        if success:
+
+                            # Обновляем позиции в очереди
+
+                            db._update_waiting_list_positions(target_wait['id'])
+
+                            await query.edit_message_text("✅ Вы успешно удалены из очереди ожидания.")
+
+                        else:
+
+                            await query.edit_message_text("❌ Ошибка при удалении из очереди.")
+
+                    else:
+
+                        await query.edit_message_text("❌ Запись в очереди не найдена.")
+
+        else:
+
+            await query.edit_message_text("❌ Волонтер не найден. Пройдите регистрацию через /start")
 
 
     elif data == 'admin':

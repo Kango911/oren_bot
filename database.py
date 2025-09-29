@@ -167,14 +167,29 @@ class Database:
             print(f"Error adding to waiting list: {e}")
             return False, 0
 
-    def remove_from_waiting_list(self, volunteer_id, event_id):
-        """Удалить волонтера из очереди"""
+    def remove_from_waiting_list(self, volunteer_id, waiting_list_id):
+        """Удалить волонтера из очереди по ID записи waiting_list"""
         cursor = self.connection.cursor()
         try:
-            cursor.execute("DELETE FROM waiting_list WHERE volunteer_id = %s AND event_id = %s",
-                           (volunteer_id, event_id))
+            # Сначала получаем event_id для обновления позиций
+            cursor.execute("SELECT event_id FROM waiting_list WHERE id = %s", (waiting_list_id,))
+            result = cursor.fetchone()
+            if not result:
+                return False
+
+            event_id = result[0]
+
+            # Удаляем запись
+            cursor.execute("DELETE FROM waiting_list WHERE id = %s AND volunteer_id = %s",
+                           (waiting_list_id, volunteer_id))
+            deleted = cursor.rowcount > 0
+
+            if deleted:
+                # Обновляем позиции в очереди
+                self._update_waiting_list_positions(event_id)
+
             self.connection.commit()
-            return cursor.rowcount > 0
+            return deleted
         except Error as e:
             print(f"Error removing from waiting list: {e}")
             return False
@@ -387,3 +402,18 @@ class Database:
         except Error as e:
             print(f"Error getting admin waiting lists: {e}")
             return []
+
+    def get_waiting_list_by_id(self, waiting_list_id):
+        """Получить запись из waiting_list по ID"""
+        cursor = self.connection.cursor(dictionary=True)
+        try:
+            cursor.execute("""
+                SELECT wl.*, e.title, e.date, e.start_time, e.end_time
+                FROM waiting_list wl
+                JOIN events e ON wl.event_id = e.id
+                WHERE wl.id = %s
+            """, (waiting_list_id,))
+            return cursor.fetchone()
+        except Error as e:
+            print(f"Error getting waiting list by ID: {e}")
+            return None

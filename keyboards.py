@@ -71,13 +71,13 @@ def unregister_events_keyboard(volunteer_id):
         title_short = reg['title'][:30] + "..." if len(reg['title']) > 30 else reg['title']
         button_text = f"✅ {reg['date']} {reg['start_time']} - {title_short}"
         # ИСПРАВЛЕНИЕ: используем event_id вместо id записи
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f'unreg_{reg["id"]}')])
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f'unreg_event_{reg["id"]}')])
 
     for wait in waiting_list:
         title_short = wait['title'][:30] + "..." if len(wait['title']) > 30 else wait['title']
         button_text = f"⏳ {wait['date']} {wait['start_time']} - {title_short} (очередь: {wait['position']})"
         # ИСПРАВЛЕНИЕ: используем event_id вместо id записи
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f'unreg_{wait["id"]}')])
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f'unreg_wait_{wait["id"]}')])
 
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data='back_to_main')])
     return InlineKeyboardMarkup(keyboard)
